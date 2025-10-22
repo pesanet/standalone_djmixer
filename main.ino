@@ -6,33 +6,29 @@
 #include <ILI9341_t3n.h>
 #include <TeensyVariablePlayback.h>
 #include <Encoder.h>
-// === Audio Setup ===
-AudioFilterBiquad biquadA_L; // Deck A Left
-AudioFilterBiquad biquadA_R; // Deck A Right
-AudioFilterBiquad biquadB_L; // Deck B Left
-AudioFilterBiquad biquadB_R; // Deck B Right
+// === Audio setup ===
+// === Audio setup ===
+AudioPlaySdResmp         playRaw1;
+AudioPlaySdResmp         playRaw2;
+AudioMixer4              mixerA;       // vasak deckmixerA
+AudioMixer4              mixerB;       // parem deck
+AudioMixer4              mixerMaster;  // master väljund
+AudioOutputI2S           audioOutput;
 
-AudioPlaySdResmp playRaw1;
-AudioPlaySdResmp playRaw2;
-AudioOutputI2S audioOutput;
-AudioMixer4 mixer1; // Left mixer
-AudioMixer4 mixer2; // Right mixer
+// === Audio routing ===
+AudioConnection          patchCord1(playRaw1, 0, mixerA, 0);
+AudioConnection          patchCord2(playRaw2, 0, mixerA, 1);
+AudioConnection          patchCord3(playRaw1, 1, mixerB, 0);
+AudioConnection          patchCord4(playRaw2, 1, mixerB, 1);
 
-// --- Deck A ühendused ---
-AudioConnection patchCord1(playRaw1, 0, biquadA_L, 0); // A left in
-AudioConnection patchCord2(playRaw1, 1, biquadA_R, 0); // A right in
-AudioConnection patchCord3(biquadA_L, 0, mixer1, 0);   // A left -> left mixer
-AudioConnection patchCord4(biquadA_R, 0, mixer2, 0);   // A right -> right mixer
+// iga deck -> master mix
+AudioConnection          patchCord5(mixerA, 0, mixerMaster, 0);
+AudioConnection          patchCord6(mixerB, 0, mixerMaster, 1);
 
-// --- Deck B ühendused ---
-AudioConnection patchCord5(playRaw2, 0, biquadB_L, 0); // B left in
-AudioConnection patchCord6(playRaw2, 1, biquadB_R, 0); // B right in
-AudioConnection patchCord7(biquadB_L, 0, mixer1, 1);   // B left -> left mixer
-AudioConnection patchCord8(biquadB_R, 0, mixer2, 1);   // B right -> right mixer
+// master -> I2S väljund
+AudioConnection          patchCord7(mixerMaster, 0, audioOutput, 0);
+AudioConnection          patchCord8(mixerMaster, 0, audioOutput, 1);
 
-// --- Output ---
-AudioConnection patchCord9(mixer1, 0, audioOutput, 0); // Left out
-AudioConnection patchCord10(mixer2, 0, audioOutput, 1); // Right out
 
 int menuCurrentPage = 0;
 int menuTotalPages = 0;
@@ -73,6 +69,9 @@ Encoder myEnc(28, 29);
 #define CLK 29
 #define DT  28
 #define SW  31
+#define SYNCB_BTN 1
+#define SYNCA_BTN 2
+#define OK_BTN 30
 #define OPEN_MENU 8
 #define OK_BTN 30
 #define START_BTN_A 33
@@ -87,7 +86,9 @@ unsigned long RAW_DURATION2_MS = 0;
 #define BASE_BPM           120
 float baseBpmA = 128.0f;
 float baseBpmB = 128.0f;
-
+float syncThresholdMs = 30.0f;  // kui palju erinevus lubatud faasis (ms)
+bool syncActiveA = false;
+bool syncActiveB = false;
 File datFile;
 bool loadingWaveform = false;
 int pointsLoaded = 0;
@@ -121,6 +122,11 @@ int totalPoints2 = 0;
 
 float currentPlaybackRate = 1.0;
 float currentPlaybackRate2 = 1.0;
+bool deckA_syncLock = false;
+bool deckB_syncLock = false;
+float deckA_targetRate = 1.0;
+float deckB_targetRate = 1.0;
+const float takeoverThreshold = 0.02; // kui palju poteka asend võib erineda enne, kui kontroll taastub
 
 bool startedA = false;
 bool startedB = false;
@@ -153,7 +159,7 @@ float getPlaybackRate(int16_t analog) {
   return analog / 612.0;
   
 }
-
+float masterGain = 0.1f;
 
 void setup() {
   SPI.usingInterrupt(digitalPinToInterrupt(10)); // Audio shield uses pin 14 for I2S
@@ -171,6 +177,8 @@ void setup() {
   pinMode(STOP_BTN_B, INPUT_PULLUP);
   pinMode(BASS_BTN_A, INPUT_PULLUP);
   pinMode(BASS_BTN_B, INPUT_PULLUP);
+    pinMode(SYNCA_BTN, INPUT_PULLUP);
+  pinMode(SYNCB_BTN, INPUT_PULLUP);
     tft.begin();
   tft.setRotation(3);
 
@@ -198,6 +206,16 @@ digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
   listTracksFromSD();
 
   drawMenu();
+
+    // algtasemed
+  mixerA.gain(0, 0.1);
+  mixerA.gain(1, 0.1);
+  mixerB.gain(0, 0.1);
+  mixerB.gain(1, 0.1);
+
+  // master gain kõigile kanalitele
+  for (int i = 0; i < 4; i++) mixerMaster.gain(i, masterGain);
+
 }
 
 void loop() { 
@@ -303,25 +321,69 @@ if (!playRaw2.isPlaying()) {
   //drawMenu();
 
 }
+
+if (digitalRead(SYNCA_BTN) == LOW) {
+  syncDeckToOther('A');
+  delay(300); // väldi topeltvajutust
+}
+
+if (digitalRead(SYNCB_BTN) == LOW) {
+  syncDeckToOther('B');
+  delay(300);
+}
+
     updateWaveformStream();
 
 
-  int newsensorValue = map(analogRead(A10), 0, 1023, 560, 660);
-  currentPlaybackRate = getPlaybackRate(newsensorValue);
-  playRaw1.setPlaybackRate(currentPlaybackRate);
+int rawA = analogRead(A10);
+float newRateA = getPlaybackRate(map(rawA, 0, 1023, 560, 660));
 
-  int newsensorValue2 = map(analogRead(A12), 0, 1023, 560, 660);
-  currentPlaybackRate2 = getPlaybackRate(newsensorValue2);
+if (deckA_syncLock) {
+  if (fabs(newRateA - deckA_targetRate) < takeoverThreshold) {
+    deckA_syncLock = false; // potekas jõudis õigesse asendisse
+    Serial.println("🟢 Deck A pot control restored");
+  }
+} 
+if (!deckA_syncLock) {
+  currentPlaybackRate = newRateA;
+  playRaw1.setPlaybackRate(currentPlaybackRate);
+}
+
+int rawB = analogRead(A12);
+float newRateB = getPlaybackRate(map(rawB, 0, 1023, 560, 660));
+
+if (deckB_syncLock) {
+  if (fabs(newRateB - deckB_targetRate) < takeoverThreshold) {
+    deckB_syncLock = false;
+    Serial.println("🟢 Deck B pot control restored");
+  }
+}
+if (!deckB_syncLock) {
+  currentPlaybackRate2 = newRateB;
   playRaw2.setPlaybackRate(currentPlaybackRate2);
+}
 
 
   unsigned long now2 = millis();
   unsigned long delta = now2 - lastUpdateMs;
   lastUpdateMs = now2;
-  float bpm1 = baseBpmA;
-  float bpm2 = baseBpmB;
-  unsigned long beatIntervalA = 60000.0 / bpm1;
-  unsigned long beatIntervalB = 60000.0 / bpm2;
+// --- Deck A BPM ---
+float bpm1;
+if (deckA_syncLock) {
+  bpm1 = BASE_BPM * deckA_targetRate;  // tempo lukus SYNC kaudu
+} else {
+  bpm1 = BASE_BPM * currentPlaybackRate; // tempo potekast
+}
+unsigned long beatIntervalA = 60000.0 / bpm1;
+
+// --- Deck B BPM ---
+float bpm2;
+if (deckB_syncLock) {
+  bpm2 = BASE_BPM * deckB_targetRate;
+} else {
+  bpm2 = BASE_BPM * currentPlaybackRate2;
+}
+unsigned long beatIntervalB = 60000.0 / bpm2;
   if (startedA) {
     virtualTimeMs += delta * currentPlaybackRate;
     //Serial.print("delta A -> "); Serial.println(virtualTimeMs);
@@ -344,10 +406,10 @@ if (!playRaw2.isPlaying()) {
 
  int cutoffB = map(analogRead(A13), 0, 1023, 500, 2000);
 
-biquadA_L.setBandpass(0, cutoffA, 0.707); // kanal 0, freq 200Hz, Q=0.707
-biquadA_R.setBandpass(0, cutoffA, 0.707); 
-biquadB_L.setBandpass(0, cutoffB, 0.707);
-biquadB_R.setBandpass(0, cutoffB, 0.707);
+//biquadA_L.setBandpass(0, cutoffA, 0.707); // kanal 0, freq 200Hz, Q=0.707
+//biquadA_R.setBandpass(0, cutoffA, 0.707); 
+//biquadB_L.setBandpass(0, cutoffB, 0.707);
+//biquadB_R.setBandpass(0, cutoffB, 0.707);
 
     delay(10);
 
@@ -762,18 +824,17 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
   // Puhasta ala
   tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
 
-  // Joonista beat-jooned
-  if (beatInterval > 0) {
-    for (int i = -100; i <= 100; i++) {
-      long long beatTime = (long long)firstBeatMs + (long long)i * (long long)beatInterval;
-      if (beatTime < 0 || beatTime > (long long)duration) continue;
-      float beatIdxF = ((float)beatTime * (float)totalPoints) / (float)duration;
-      int x = (int)((beatIdxF - startIdx) * (long)SCREEN_WIDTH / (long)viewWidth);
-      if (x >= 0 && x < SCREEN_WIDTH) {
-        tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_GREEN);
-      }
-    }
+  // Deck A waveform beat lines
+if (beatInterval > 0) {
+  for (int i = -100; i <= 100; i++) {
+    long long beatTime = (long long)firstBeatMs + (long long)i * (long long)beatInterval;
+    if (beatTime < 0 || beatTime > (long long)duration) continue;
+    float beatIdxF = ((float)beatTime * (float)totalPoints) / (float)duration;
+    int x = (int)((beatIdxF - startIdx) * (long)SCREEN_WIDTH / (long)viewWidth);
+    if (x >= 0 && x < SCREEN_WIDTH)
+      tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_GREEN);
   }
+}
 
   // Joonista waveform (konverteerime int16 -> float)
   for (int x = 0; x < SCREEN_WIDTH; x++) {
@@ -886,10 +947,10 @@ void updateCrossfade() {
   if (gainA < 0.12f) gainA = 0.0f;
   if (gainB < 0.12f) gainB = 0.0f;
 
-  mixer1.gain(0, gainA);
-  mixer1.gain(1, gainB);
-  mixer2.gain(0, gainA);
-  mixer2.gain(1, gainB);
+  mixerA.gain(0, gainA);
+  mixerA.gain(1, gainB);
+  mixerB.gain(0, gainA);
+  mixerB.gain(1, gainB);
 
   //Serial.print("Crossfade raw: ");
   //Serial.print(raw);
@@ -910,3 +971,30 @@ float extractBpmFromFilename(const char *filename) {
   }
   return bpm;
 }
+void syncDeckToOther(char targetDeck) {
+  if (targetDeck == 'A') {
+    float ratio = baseBpmB / baseBpmA;
+    currentPlaybackRate = ratio * currentPlaybackRate2;
+    playRaw1.setPlaybackRate(currentPlaybackRate);
+
+    virtualTimeMs = virtualTimeMs2;
+    Serial.println("🎵 Deck A synced to Deck B");
+
+    // Lukk peale
+    deckA_syncLock = true;
+    deckA_targetRate = currentPlaybackRate;
+  } 
+  else if (targetDeck == 'B') {
+    float ratio = baseBpmA / baseBpmB;
+    currentPlaybackRate2 = ratio * currentPlaybackRate;
+    playRaw2.setPlaybackRate(currentPlaybackRate2);
+
+    virtualTimeMs2 = virtualTimeMs;
+    Serial.println("🎵 Deck B synced to Deck A");
+
+    // Lukk peale
+    deckB_syncLock = true;
+    deckB_targetRate = currentPlaybackRate2;
+  }
+}
+
