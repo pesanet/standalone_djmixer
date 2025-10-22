@@ -34,8 +34,9 @@ AudioConnection patchCord8(biquadB_R, 0, mixer2, 1);   // B right -> right mixer
 AudioConnection patchCord9(mixer1, 0, audioOutput, 0); // Left out
 AudioConnection patchCord10(mixer2, 0, audioOutput, 1); // Right out
 
-
-
+int menuCurrentPage = 0;
+int menuTotalPages = 0;
+#define MENU_TRACKS_PER_PAGE 15
 // === Display Setup ===
 #define TFT_MISO 12
 #define TFT_MOSI 11
@@ -50,7 +51,7 @@ ILI9341_t3n tft = ILI9341_t3n(TFT_CS, TFT_DC, TFT_RST, TFT_MOSI, TFT_CLK, TFT_MI
 
 // === SD / File Setup ===
 const int SD_CS = 10;
-char trackFiles[10][100];
+char trackFiles[10][200];
 int totalTracks = 0;
 int selectedTrackA = 0;
 int selectedTrackB = 1;
@@ -62,7 +63,7 @@ int targetDeck = 1; // default Deck B
 #define SCREEN_WIDTH   320
 #define SCREEN_HEIGHT  240
 #define WAVEFORM_Y1    20
-#define WAVEFORM_Y2    140
+#define WAVEFORM_Y2    100
 #define WAVEFORM_H     80
 #define PLAYHEAD_X     (SCREEN_WIDTH / 2)
 const int FIXED_VIEW_WIDTH = 4000;
@@ -84,7 +85,8 @@ unsigned long RAW_DURATION_MS = 0;
 unsigned long RAW_DURATION2_MS = 0;
 
 #define BASE_BPM           120
-
+float baseBpmA = 128.0f;
+float baseBpmB = 128.0f;
 
 File datFile;
 bool loadingWaveform = false;
@@ -149,11 +151,12 @@ float playheadProgressB = 0.0f;
 float smoothedCrossfade = 0.0f;  // global
 float getPlaybackRate(int16_t analog) {
   return analog / 612.0;
+  
 }
 
 
 void setup() {
-  SPI.usingInterrupt(digitalPinToInterrupt(14)); // Audio shield uses pin 14 for I2S
+  SPI.usingInterrupt(digitalPinToInterrupt(10)); // Audio shield uses pin 14 for I2S
   Serial.begin(9600);
   unsigned long timeout = millis();
   while (!Serial && millis() - timeout < 3000) {}
@@ -216,6 +219,7 @@ if (inMenu2) {
 }
 if (inMenu) {
   tft.setRotation(3);
+  
   handleMenuEncoder();
 
   if (digitalRead(OK_BTN) == LOW) {
@@ -225,7 +229,7 @@ if (inMenu) {
     resetScrollA = true;
     resetScrollB = true;
     tft.fillScreen(ILI9341_BLACK);
-    delay(10);
+    delay(100);
     
       lastUpdateMs = millis();
    // Kui Deck A mängib, lae ainult Deck B
@@ -253,6 +257,7 @@ if (inMenu) {
 
 
     if (!startedA && digitalRead(START_BTN_A) == LOW) {
+      baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
   playRaw1.playRaw(trackFiles[selectedTrackA], 2);
   startMillisA = millis();
   //virtualTimeMs = 0;
@@ -267,6 +272,7 @@ if (inMenu) {
 }
 
 if (!startedB && digitalRead(START_BTN_B) == LOW) {
+  baseBpmB = extractBpmFromFilename(trackFiles[selectedTrackB]);
   playRaw2.playRaw(trackFiles[selectedTrackB], 2);
   startMillisB = millis();
   //virtualTimeMs2 = 0;
@@ -309,26 +315,25 @@ if (!playRaw2.isPlaying()) {
   playRaw2.setPlaybackRate(currentPlaybackRate2);
 
 
-  unsigned long now = millis();
-  unsigned long delta = now - lastUpdateMs;
-  lastUpdateMs = now;
-  float bpm1 = BASE_BPM * currentPlaybackRate;
-  float bpm2 = BASE_BPM * currentPlaybackRate2;
-  unsigned long beatInterval = 60000.0 / bpm1;
-  unsigned long beatInterval2 = 60000.0 / bpm2;
-
+  unsigned long now2 = millis();
+  unsigned long delta = now2 - lastUpdateMs;
+  lastUpdateMs = now2;
+  float bpm1 = baseBpmA;
+  float bpm2 = baseBpmB;
+  unsigned long beatIntervalA = 60000.0 / bpm1;
+  unsigned long beatIntervalB = 60000.0 / bpm2;
   if (startedA) {
     virtualTimeMs += delta * currentPlaybackRate;
     //Serial.print("delta A -> "); Serial.println(virtualTimeMs);
     if (virtualTimeMs > RAW_DURATION_MS) virtualTimeMs = RAW_DURATION_MS;
-    drawScrollingWaveform(waveform1, totalPoints1, virtualTimeMs, beatInterval, WAVEFORM_Y1, bpm1, RAW_DURATION_MS);
+    drawScrollingWaveform(waveform1, totalPoints1, virtualTimeMs, beatIntervalA, WAVEFORM_Y1, bpm1, RAW_DURATION_MS);
 
   }
 
   if (startedB) {
     virtualTimeMs2 += delta * currentPlaybackRate2;
     if (virtualTimeMs2 > RAW_DURATION2_MS) virtualTimeMs2 = RAW_DURATION2_MS;
-    drawScrollingWaveform(waveform2, totalPoints2, virtualTimeMs2, beatInterval2, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS);
+    drawScrollingWaveform(waveform2, totalPoints2, virtualTimeMs2, beatIntervalB, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS);
 
   }
 
@@ -347,16 +352,16 @@ biquadB_R.setBandpass(0, cutoffB, 0.707);
     delay(10);
 
 
-  if (drawTimer > 60) {
+  if (drawTimer > 20) {
     drawTimer = 0;
     handleEncoder();
-    drawDeckLabels(bpm1, bpm2);
-    drawTrackDurations();
-    tft.setTextSize(1);
-      tft.setCursor(50, 10);
-  tft.print(virtualTimeMs);
-  tft.setCursor(50, 130);
-    tft.print(virtualTimeMs2);
+    //drawDeckLabels(bpm1, bpm2);
+    //drawTrackDurations();
+    //tft.setTextSize(1);
+    //  tft.setCursor(50, 10);
+  //tft.print(virtualTimeMs);
+  //tft.setCursor(50, 130);
+   // tft.print(virtualTimeMs2);
   }
   
   if (digitalRead(OPEN_MENU) == LOW && !inMenu2) {
@@ -383,11 +388,12 @@ if (digitalRead(SW) == LOW && !inMenu) {
 
 }
 
+// --- Failide lugemine SD-kaardilt ---
 void listTracksFromSD() {
-   digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
-digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
-delayMicroseconds(5);
-    delayMicroseconds(50); // pisike paus, et SPI vabastuks
+  digitalWrite(TFT_CS, HIGH);
+  digitalWrite(SD_CS, HIGH);
+  delayMicroseconds(50);
+
   File root = SD.open("/");
   totalTracks = 0;
   while (true) {
@@ -395,17 +401,20 @@ delayMicroseconds(5);
     if (!entry) break;
     if (!entry.isDirectory()) {
       String name = entry.name();
-      if (name.endsWith(".raw") && totalTracks < 15) {
-        name.toCharArray(trackFiles[totalTracks], 100); 
+      if (name.endsWith(".raw")) {
+        name.toCharArray(trackFiles[totalTracks], 100);
         totalTracks++;
-       
       }
     }
     entry.close();
   }
-digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
+  digitalWrite(TFT_CS, LOW);
 
+  // Arvuta mitu lehte vaja
+  menuTotalPages = (totalTracks + MENU_TRACKS_PER_PAGE - 1) / MENU_TRACKS_PER_PAGE;
+  menuCurrentPage = 0;
 }
+// --- Menüü joonistamine ---
 void drawMenu() {
   tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(ILI9341_WHITE);
@@ -415,14 +424,45 @@ void drawMenu() {
   tft.print("Vali lugu: ");
   tft.println(selectingDeckA ? "Deck A" : "Deck B");
 
-  for (int i = 0; i < totalTracks; i++) {
+  int startIndex = menuCurrentPage * MENU_TRACKS_PER_PAGE;
+  int endIndex = min(startIndex + MENU_TRACKS_PER_PAGE, totalTracks);
+
+  for (int i = startIndex; i < endIndex; i++) {
     if ((selectingDeckA && i == selectedTrackA) || (!selectingDeckA && i == selectedTrackB))
       tft.setTextColor(ILI9341_YELLOW);
     else
       tft.setTextColor(ILI9341_WHITE);
 
-    tft.setCursor(10, 25 + i * 12);
+    tft.setCursor(10, 25 + (i - startIndex) * 12);
     tft.println(trackFiles[i]);
+  }
+
+  // --- Kuvame lehekülje info ---
+  tft.setTextColor(ILI9341_CYAN);
+  tft.setCursor(10, 25 + (MENU_TRACKS_PER_PAGE + 1) * 12);
+  tft.print("Leht ");
+  tft.print(menuCurrentPage + 1);
+  tft.print("/");
+  tft.println(menuTotalPages);
+
+  // --- Kuvame nupukäsud ---
+  tft.setTextColor(ILI9341_DARKGREY);
+  tft.setCursor(180, 25 + (MENU_TRACKS_PER_PAGE + 1) * 12);
+  tft.print("<- / -> lehe vahetus");
+}
+
+// --- Lehe muutmine (näiteks encoderi või nuppudega) ---
+void nextPage() {
+  if (menuCurrentPage < menuTotalPages - 1) {
+    menuCurrentPage++;
+    drawMenu();
+  }
+}
+
+void prevPage() {
+  if (menuCurrentPage > 0) {
+    menuCurrentPage--;
+    drawMenu();
   }
 }
 void drawMenu2() {
@@ -454,7 +494,7 @@ void handleMenuEncoder() {
       }
     }
     drawMenu();
-    delay(150);
+    //delay(80);
   }
 
   if (digitalRead(OK_BTN) == LOW) {
@@ -576,7 +616,10 @@ int len = d->file.readBytesUntil('\n', line, sizeof(line) - 1);
 if (len <= 0) break;
 line[len] = '\0';
 d->buffer[d->pointsLoaded++] = (int16_t)(atof(line) * 32767.0f);
-linesRead++;
+if (++linesRead >= 100) {
+    yield(); // lase audio katkestustel töötada
+    linesRead = 0;
+}
 }
 
 
@@ -727,7 +770,7 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
       float beatIdxF = ((float)beatTime * (float)totalPoints) / (float)duration;
       int x = (int)((beatIdxF - startIdx) * (long)SCREEN_WIDTH / (long)viewWidth);
       if (x >= 0 && x < SCREEN_WIDTH) {
-        tft.drawFastVLine(x, yOffset, WAVEFORM_H, TFT_DARKGREY);
+        tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_GREEN);
       }
     }
   }
@@ -742,7 +785,7 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
       int height = (int)(peak * (WAVEFORM_H / 2));
       if (height < 0) height = 0;
       if (height > WAVEFORM_H/2) height = WAVEFORM_H/2;
-      tft.drawFastVLine(x, yCenter - height, height * 2, ILI9341_GREEN);
+      tft.drawFastVLine(x, yCenter - height, height * 2, TFT_DARKGREY);
     }
   }
 
@@ -854,4 +897,16 @@ void updateCrossfade() {
   //Serial.print(smoothedCrossfade, 2);
   //Serial.print("  gainA: ");
   //Serial.println(gainA, 2);
+}
+float extractBpmFromFilename(const char *filename) {
+  int bpm = 128; // vaikeväärtus
+  for (int i = 0; filename[i] != '\0'; i++) {
+    if (isdigit(filename[i]) && isdigit(filename[i+1]) && isdigit(filename[i+2]) &&
+        filename[i+3] == '_') {
+      char num[4] = { filename[i], filename[i+1], filename[i+2], '\0' };
+      bpm = atoi(num);
+      break;
+    }
+  }
+  return bpm;
 }
