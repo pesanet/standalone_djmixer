@@ -8,26 +8,40 @@
 #include <Encoder.h>
 // === Audio setup ===
 // === Audio setup ===
+AudioEffectFade          fade1;          //xy=328,49
 AudioPlaySdResmp         playRaw1;
 AudioPlaySdResmp         playRaw2;
 AudioMixer4              mixerA;       // vasak deckmixerA
 AudioMixer4              mixerB;       // parem deck
 AudioMixer4              mixerMaster;  // master väljund
 AudioOutputI2S           audioOutput;
+AudioFilterBiquad biquadA_L; // Deck A Left
+AudioFilterBiquad biquadA_R; // Deck A Right
+AudioFilterBiquad biquadB_L; // Deck B Left
+AudioFilterBiquad biquadB_R; // Deck B Right
 
-// === Audio routing ===
-AudioConnection          patchCord1(playRaw1, 0, mixerA, 0);
-AudioConnection          patchCord2(playRaw2, 0, mixerA, 1);
-AudioConnection          patchCord3(playRaw1, 1, mixerB, 0);
-AudioConnection          patchCord4(playRaw2, 1, mixerB, 1);
 
 // iga deck -> master mix
 AudioConnection          patchCord5(mixerA, 0, mixerMaster, 0);
 AudioConnection          patchCord6(mixerB, 0, mixerMaster, 1);
 
+//filer
+// --- Deck A ühendused ---
+AudioConnection patchCord7(playRaw1, 0, mixerA, 0); // A left in
+AudioConnection patchCord8(playRaw1, 1, mixerB, 0); // A right in
+//AudioConnection patchCord9(biquadA_L, 0, mixerA, 0);   // A left -> left mixer
+//AudioConnection patchCord10(biquadA_R, 0, mixerB, 0);   // A right -> right mixer
+
+
+// --- Deck B ühendused ---
+AudioConnection patchCord11(playRaw2, 0, mixerA, 1); // B left in
+AudioConnection patchCord12(playRaw2, 1, mixerB, 1); // B right in
+//AudioConnection patchCord13(biquadB_L, 0, mixerA, 1);   // B left -> left mixer
+//AudioConnection patchCord14(biquadB_R, 0, mixerB, 1);   // B right -> right mixer
+
 // master -> I2S väljund
-AudioConnection          patchCord7(mixerMaster, 0, audioOutput, 0);
-AudioConnection          patchCord8(mixerMaster, 0, audioOutput, 1);
+AudioConnection          patchCord15(mixerMaster, 0, audioOutput, 0);
+AudioConnection          patchCord16(mixerMaster, 0, audioOutput, 1);
 
 
 int menuCurrentPage = 0;
@@ -83,6 +97,8 @@ Encoder myEnc(28, 29);
 unsigned long RAW_DURATION_MS = 0;
 unsigned long RAW_DURATION2_MS = 0;
 
+unsigned long beatGridStartA = 0;
+unsigned long beatGridStartB = 0;
 #define BASE_BPM           120
 float baseBpmA = 128.0f;
 float baseBpmB = 128.0f;
@@ -108,6 +124,20 @@ elapsedMillis drawTimer;
 unsigned long lastUpdateMs = 0;
 double virtualTimeMs = 0;
 double virtualTimeMs2 = 0;
+
+
+
+
+bool deckAPlaying = false;  // selge olekuflag
+bool deckBPlaying = false;  // selge olekuflag
+float gainA = 0.0f, gainB = 0.0f;
+bool fadingInA = false, fadingOutA = false;
+bool fadingInB = false, fadingOutB = false;
+unsigned long fadeStartA = 0, fadeStartB = 0;
+float fadeStartGainA = 0.0f, fadeStartGainB = 0.0f;
+const unsigned long FADE_DURATION = 500;  // ms
+
+
 
 int zoomLevel = 4;
 int lastCLK = HIGH;
@@ -159,7 +189,72 @@ float getPlaybackRate(int16_t analog) {
   return analog / 612.0;
   
 }
-float masterGain = 0.1f;
+float masterGain = 1.0f;
+
+void fadeOutMixer(AudioMixer4 &mixer, float &currentGain, float durationMs = 3000) {
+  float startGain = currentGain;
+  int steps = 50;
+  for (int i = 0; i < steps; i++) {
+    float g = startGain * (1.0f - (float)i / steps);
+    mixer.gain(0, g);
+    mixer.gain(1, g);
+    currentGain = g;
+    delay(durationMs / steps);
+  }
+  mixer.gain(0, 0.0f);
+  mixer.gain(1, 0.0f);
+  currentGain = 0.0f;
+}
+
+
+
+// --- Eksponentsiaalne fade-out ---
+bool fadeOutMixer(AudioMixer4 &mixer, int channel, float &gainVar,
+                  bool &fadingFlag, unsigned long fadeStart, float fadeStartGain,
+                  unsigned long fadeDuration) {
+  if (!fadingFlag) return false;
+
+  unsigned long elapsed = millis() - fadeStart;
+  if (elapsed >= fadeDuration) {
+    gainVar = 0.0f;
+    mixer.gain(channel, 0.0f);
+    fadingFlag = false;
+    return true;
+  }
+
+  float progress = (float)elapsed / (float)fadeDuration;
+  float newGain = fadeStartGain * powf(0.001f, progress); // log-kõver (sujuv)
+  if (newGain < 0.0005f) newGain = 0.0f;
+
+  mixer.gain(channel, newGain);
+  gainVar = newGain;
+  return false;
+}
+
+// --- Eksponentsiaalne fade-in ---
+bool fadeInMixer(AudioMixer4 &mixer, int channel, float &gainVar,
+                 bool &fadingFlag, unsigned long fadeStart, float fadeStartGain,
+                 unsigned long fadeDuration, float targetGain = 1.0f) {
+  if (!fadingFlag) return false;
+
+  unsigned long elapsed = millis() - fadeStart;
+  if (elapsed >= fadeDuration) {
+    gainVar = targetGain;
+    mixer.gain(channel, targetGain);
+    fadingFlag = false;
+    return true;
+  }
+
+  float progress = (float)elapsed / (float)fadeDuration;
+  float newGain = fadeStartGain + (targetGain - fadeStartGain) * (1.0f - powf(0.001f, 1.0f - progress));
+  if (newGain > targetGain) newGain = targetGain;
+
+  mixer.gain(channel, newGain);
+  gainVar = newGain;
+  return false;
+}
+
+
 
 void setup() {
   SPI.usingInterrupt(digitalPinToInterrupt(10)); // Audio shield uses pin 14 for I2S
@@ -208,13 +303,13 @@ digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
   drawMenu();
 
     // algtasemed
-  mixerA.gain(0, 0.1);
-  mixerA.gain(1, 0.1);
-  mixerB.gain(0, 0.1);
-  mixerB.gain(1, 0.1);
+  mixerA.gain(0, -5.0);
+  mixerA.gain(1, -5.0);
+  mixerB.gain(0, -5.0);
+  mixerB.gain(1, -5.0);
 
   // master gain kõigile kanalitele
-  for (int i = 0; i < 4; i++) mixerMaster.gain(i, masterGain);
+  //for (int i = 0; i < 4; i++) mixerMaster.gain(i, masterGain);
 
 }
 
@@ -274,35 +369,83 @@ if (inMenu) {
 
 
 
-    if (!startedA && digitalRead(START_BTN_A) == LOW) {
-      baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
-  playRaw1.playRaw(trackFiles[selectedTrackA], 2);
-  startMillisA = millis();
-  //virtualTimeMs = 0;
-  startedA = true;
-  delay(10);
+     // --- Deck A START ---
+  if (digitalRead(START_BTN_A) == LOW && !deckAPlaying && !fadingInA) {
+    Serial.println("▶️ Deck A fade-in");
+    baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
+    playRaw1.playRaw(trackFiles[selectedTrackA], 2);
+    delay(5); // anna heli pipeline'ile hetk aega startimiseks
+    // nulli kõik fadeOut state'id
+    fadingOutA = false;
+    gainA = 0.0f;
+    mixerMaster.gain(0, gainA);
+
+    fadeStartGainA = 0.0f;
+    fadeStartA = millis();
+    fadingInA = true;
+    deckAPlaying = true;
+    beatGridStartA = 0;
+    startMillisA = millis();
+    //virtualTimeMs = 0;
+    startedA = true;
+    delay(200);  // väike debounce
 }
-    if (startedA && digitalRead(STOP_BTN_A) == LOW) {
-  playRaw1.stop();
-  virtualTimeMs = 0;
-  startedA = false;
-  delay(10);
+  
+     // --- Deck A START ---
+  if (digitalRead(START_BTN_A) == LOW && !fadingInA && !playRaw1.isPlaying()) {
+    baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
+    playRaw1.playRaw(trackFiles[selectedTrackA], 2);
+// nulli kõik fadeOut state'id
+    fadingOutA = false;
+    gainA = 0.0f;
+    mixerMaster.gain(0, gainA);
+
+    fadeStartGainA = 0.0f;
+    fadeStartA = millis();
+    fadingInA = true;
+    deckAPlaying = true;
+    delay(200);  // väike debounce
+}
+// --- Deck A STOP ---
+if (digitalRead(STOP_BTN_A) == LOW && !fadingOutA && playRaw1.isPlaying()) {
+   fadeStartGainA = gainA;
+    fadeStartA = millis();
+    fadingOutA = true;
+    fadingInA = false;
+    delay(200);  // väike debounce
 }
 
-if (!startedB && digitalRead(START_BTN_B) == LOW) {
-  baseBpmB = extractBpmFromFilename(trackFiles[selectedTrackB]);
-  playRaw2.playRaw(trackFiles[selectedTrackB], 2);
-  startMillisB = millis();
-  //virtualTimeMs2 = 0;
-  startedB = true;
-  delay(10);
+if (digitalRead(START_BTN_B) == LOW && !fadingInB && !playRaw2.isPlaying()) {
+    baseBpmB = extractBpmFromFilename(trackFiles[selectedTrackB]);
+    playRaw2.playRaw(trackFiles[selectedTrackB], 2);
+    fadeStartGainB = 0.0f;
+    fadeStartB = millis();
+    fadingInB = true;
+    Serial.println("▶️ Deck B fade-in");
+    beatGridStartB = 0;
+    startMillisB = millis();
+    //virtualTimeMs2 = 0;
+    startedB = true;
+    delay(200);  // väike debounce
 }
-    if (startedB && digitalRead(STOP_BTN_B) == LOW) {
-  playRaw2.stop();
-  virtualTimeMs2 = 0;
-  startedB = false;
-  delay(10);
-}
+ // --- Deck B STOP ---
+  if (digitalRead(STOP_BTN_B) == LOW && !fadingOutB && playRaw2.isPlaying()) {
+    fadeStartGainB = gainB;
+    fadeStartB = millis();
+    fadingOutB = true;
+    Serial.println("⏹️ Deck B fade-out");
+    delay(200);  // väike debounce
+  }
+  // --- Faderid uuendused ---
+  if (fadingInA) fadeInMixer(mixerMaster, 0, gainA, fadingInA, fadeStartA, fadeStartGainA, FADE_DURATION, 0.8f);
+  if (fadingOutA && fadeOutMixer(mixerMaster, 0, gainA, fadingOutA, fadeStartA, fadeStartGainA, FADE_DURATION)) {
+    playRaw1.stop();
+  }
+
+  if (fadingInB) fadeInMixer(mixerMaster, 1, gainB, fadingInB, fadeStartB, fadeStartGainB, FADE_DURATION, 0.8f);
+  if (fadingOutB && fadeOutMixer(mixerMaster, 1, gainB, fadingOutB, fadeStartB, fadeStartGainB, FADE_DURATION)) {
+    playRaw2.stop();
+  }
 
 // Check if Deck A finished playing
 if (!playRaw1.isPlaying()) {
@@ -333,10 +476,12 @@ if (digitalRead(SYNCB_BTN) == LOW) {
 }
 
     updateWaveformStream();
+    
 
-
+static float filteredA = 0;
 int rawA = analogRead(A10);
-float newRateA = getPlaybackRate(map(rawA, 0, 1023, 560, 660));
+filteredA = 0.9 * filteredA + 0.1 * rawA;  // 0.9 tähendab 90% eelmine väärtus
+float newRateA = getPlaybackRate(map((int)filteredA, 0, 1023, 560, 660));
 
 if (deckA_syncLock) {
   if (fabs(newRateA - deckA_targetRate) < takeoverThreshold) {
@@ -348,9 +493,10 @@ if (!deckA_syncLock) {
   currentPlaybackRate = newRateA;
   playRaw1.setPlaybackRate(currentPlaybackRate);
 }
-
+static float filteredB = 0;
 int rawB = analogRead(A12);
-float newRateB = getPlaybackRate(map(rawB, 0, 1023, 560, 660));
+filteredB = 0.9 * filteredB + 0.1 * rawB;  // 0.9 tähendab 90% eelmine väärtus
+float newRateB = getPlaybackRate(map((int)filteredB, 0, 1023, 560, 660));
 
 if (deckB_syncLock) {
   if (fabs(newRateB - deckB_targetRate) < takeoverThreshold) {
@@ -388,36 +534,36 @@ unsigned long beatIntervalB = 60000.0 / bpm2;
     virtualTimeMs += delta * currentPlaybackRate;
     //Serial.print("delta A -> "); Serial.println(virtualTimeMs);
     if (virtualTimeMs > RAW_DURATION_MS) virtualTimeMs = RAW_DURATION_MS;
-    drawScrollingWaveform(waveform1, totalPoints1, virtualTimeMs, beatIntervalA, WAVEFORM_Y1, bpm1, RAW_DURATION_MS);
+    drawScrollingWaveform(waveform1, totalPoints1, virtualTimeMs, beatIntervalA, WAVEFORM_Y1, bpm1, RAW_DURATION_MS,beatGridStartA);
 
   }
 
   if (startedB) {
     virtualTimeMs2 += delta * currentPlaybackRate2;
     if (virtualTimeMs2 > RAW_DURATION2_MS) virtualTimeMs2 = RAW_DURATION2_MS;
-    drawScrollingWaveform(waveform2, totalPoints2, virtualTimeMs2, beatIntervalB, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS);
+    drawScrollingWaveform(waveform2, totalPoints2, virtualTimeMs2, beatIntervalB, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS,beatGridStartB);
 
   }
 
   updateCrossfade();
-
- int cutoffA = map(analogRead(A0), 0, 1023, 500, 2000);
+/*/
+ int cutoffA = map(analogRead(A10), 0, 1023, 500, 2000);
 
 
  int cutoffB = map(analogRead(A13), 0, 1023, 500, 2000);
 
-//biquadA_L.setBandpass(0, cutoffA, 0.707); // kanal 0, freq 200Hz, Q=0.707
-//biquadA_R.setBandpass(0, cutoffA, 0.707); 
-//biquadB_L.setBandpass(0, cutoffB, 0.707);
-//biquadB_R.setBandpass(0, cutoffB, 0.707);
-
+biquadA_L.setBandpass(0, cutoffA, 0.707); // kanal 0, freq 200Hz, Q=0.707
+biquadA_R.setBandpass(0, cutoffA, 0.707); 
+biquadB_L.setBandpass(0, cutoffB, 0.707);
+biquadB_R.setBandpass(0, cutoffB, 0.707);
+/*/
     delay(10);
 
 
   if (drawTimer > 20) {
     drawTimer = 0;
     handleEncoder();
-    //drawDeckLabels(bpm1, bpm2);
+    drawDeckLabels(bpm1, bpm2);
     //drawTrackDurations();
     //tft.setTextSize(1);
     //  tft.setCursor(50, 10);
@@ -446,7 +592,15 @@ if (digitalRead(SW) == LOW && !inMenu) {
   }
 }
 
+  int potValue = analogRead(A0);
+  float newGain = (float)potValue / 1023.0f;
 
+  // tee kõver sujuvamaks (logaritmiline tundlikkus)
+  newGain = powf(newGain, 1.5f);
+
+  // uuenda master gain mõlemale kanalile
+  mixerMaster.gain(0, newGain);
+  mixerMaster.gain(1, newGain);
 
 }
 
@@ -791,7 +945,7 @@ void handleEncoder() {
 
 
 // Kui waveform on int16_t (sisalduvad -32767..+32767), teisendame enne joonistamist float-ks
-void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now, unsigned long beatInterval, int yOffset, float bpm, unsigned long duration) {
+void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now, unsigned long beatInterval, int yOffset, float bpm, unsigned long duration, unsigned long beatGridStart) {
   // Sama turvakontroll nagu float-versioonis
   if (duration == 0 || totalPoints <= 0) {
     tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
@@ -818,8 +972,14 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
   if (playheadIdx >= totalPoints) playheadIdx = totalPoints - 1;
 
   unsigned long playheadMs = (unsigned long)((float)playheadIdx / (float)totalPoints * (float)duration);
-  unsigned long firstBeatMs = 0;
-  if (beatInterval > 0) firstBeatMs = playheadMs - (playheadMs % beatInterval);
+
+    // Joonista beatid alates fikseeritud beatGridStart väärtusest
+    unsigned long firstBeatMs = 0;
+        if (beatInterval > 0) {
+          long long rel = (long long)playheadMs - (long long)beatGridStartA; // või B vastavalt deckile
+          firstBeatMs = beatGridStartA + (rel - (rel % beatInterval));
+        }
+
 
   // Puhasta ala
   tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
@@ -932,33 +1092,7 @@ int deckPrompt(bool deckAPlaying) {
     }
   }
 }
-void updateCrossfade() {
-  int raw = analogRead(A11);
-  raw = constrain(raw, 0, 1023);
-  float x = (float)raw / 1023.0f;
 
-  // 🔧 Madalpääsfilter
-  smoothedCrossfade = smoothedCrossfade * 0.9f + x * 0.1f;
-
-  float gainA = sqrtf(1.0f - smoothedCrossfade);
-  float gainB = sqrtf(smoothedCrossfade);
-
-  // Väike lävi täielikuks vaigistuseks
-  if (gainA < 0.12f) gainA = 0.0f;
-  if (gainB < 0.12f) gainB = 0.0f;
-
-  mixerA.gain(0, gainA);
-  mixerA.gain(1, gainB);
-  mixerB.gain(0, gainA);
-  mixerB.gain(1, gainB);
-
-  //Serial.print("Crossfade raw: ");
-  //Serial.print(raw);
-  //Serial.print("  smooth: ");
-  //Serial.print(smoothedCrossfade, 2);
-  //Serial.print("  gainA: ");
-  //Serial.println(gainA, 2);
-}
 float extractBpmFromFilename(const char *filename) {
   int bpm = 128; // vaikeväärtus
   for (int i = 0; filename[i] != '\0'; i++) {
@@ -997,4 +1131,30 @@ void syncDeckToOther(char targetDeck) {
     deckB_targetRate = currentPlaybackRate2;
   }
 }
+void updateCrossfade() {
+  int raw = analogRead(A11);
+  raw = constrain(raw, 0, 1023);
+  float x = (float)raw / 1023.0f;
 
+  // 🔧 Madalpääsfilter
+  smoothedCrossfade = smoothedCrossfade * 0.9f + x * 0.1f;
+
+  float gainA = sqrtf(1.0f - smoothedCrossfade);
+  float gainB = sqrtf(smoothedCrossfade);
+
+  // Väike lävi täielikuks vaigistuseks
+  if (gainA < 0.12f) gainA = 0.0f;
+  if (gainB < 0.12f) gainB = 0.0f;
+
+  mixerA.gain(0, gainA);
+  mixerA.gain(1, gainB);
+  mixerB.gain(0, gainA);
+  mixerB.gain(1, gainB);
+
+  //Serial.print("Crossfade raw: ");
+  //Serial.print(raw);
+  //Serial.print("  smooth: ");
+  //Serial.print(smoothedCrossfade, 2);
+  //Serial.print("  gainA: ");
+  //Serial.println(gainA, 2);
+}
