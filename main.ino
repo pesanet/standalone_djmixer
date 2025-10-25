@@ -412,7 +412,7 @@ if (digitalRead(STOP_BTN_A) == LOW && !fadingOutA && playRaw1.isPlaying()) {
     fadeStartA = millis();
     fadingOutA = true;
     fadingInA = false;
-    delay(200);  // väike debounce
+    
 }
 
 if (digitalRead(START_BTN_B) == LOW && !fadingInB && !playRaw2.isPlaying()) {
