@@ -56,7 +56,12 @@ int menuTotalPages = 0;
 #define TFT_DC 3
 #define TFT_RST 255
 ILI9341_t3n tft = ILI9341_t3n(TFT_CS, TFT_DC, TFT_RST, TFT_MOSI, TFT_CLK, TFT_MISO);
-#define TFT_DARKGREY 0x7BEF
+#define TFT_myLIGHTBLUE 0x0cd0
+#define TFT_myBLUE2 0xe79d
+#define TFT_myBLUE 0x0aca
+#define TFT_myORANGE 0xfbc0
+
+#define TFT_myORANGE2 0xfd20
 
 
 // === SD / File Setup ===
@@ -100,8 +105,8 @@ unsigned long RAW_DURATION2_MS = 0;
 unsigned long beatGridStartA = 0;
 unsigned long beatGridStartB = 0;
 #define BASE_BPM           120
-float baseBpmA = 128.0f;
-float baseBpmB = 128.0f;
+float baseBpmA = 120.0f;
+float baseBpmB = 120.0f;
 float syncThresholdMs = 30.0f;  // kui palju erinevus lubatud faasis (ms)
 bool syncActiveA = false;
 bool syncActiveB = false;
@@ -257,7 +262,7 @@ bool fadeInMixer(AudioMixer4 &mixer, int channel, float &gainVar,
 
 
 void setup() {
-  SPI.usingInterrupt(digitalPinToInterrupt(10)); // Audio shield uses pin 14 for I2S
+  //SPI.usingInterrupt(digitalPinToInterrupt(10)); // Audio shield uses pin 14 for I2S
   Serial.begin(9600);
   unsigned long timeout = millis();
   while (!Serial && millis() - timeout < 3000) {}
@@ -281,7 +286,7 @@ void setup() {
   //tft.useFrameBuffer(true);
   //tft.fillScreen(ILI9341_BLACK);
   //tft.updateScreen();  // Push framebuffer to display
-  tft.fillScreen(ILI9341_BLACK); 
+  //tft.fillScreen(ILI9341_BLACK); 
 
     digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
 digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
@@ -294,10 +299,10 @@ if (!SD.begin(10)) {
 }
 
 digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
+tft.fillScreen(ILI9341_BLACK); 
 
 
-
-  AudioMemory(60);
+  AudioMemory(120);
   listTracksFromSD();
 
   drawMenu();
@@ -342,9 +347,9 @@ if (inMenu) {
     resetScrollA = true;
     resetScrollB = true;
     tft.fillScreen(ILI9341_BLACK);
-    delay(100);
-    
-      lastUpdateMs = millis();
+     //lastUpdateMs = millis();  // nulli delta ajalugu
+       
+
    // Kui Deck A mängib, lae ainult Deck B
     if (playRaw1.isPlaying()) {
       //virtualTimeMs = playRaw1.positionMillis();
@@ -364,13 +369,15 @@ if (inMenu) {
       loadSelectedTrack(false);
     }
   }
+
+  
   return;
 }
 
-
+tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); 
 
      // --- Deck A START ---
-  if (digitalRead(START_BTN_A) == LOW && !deckAPlaying && !fadingInA) {
+  if (digitalRead(START_BTN_A) == LOW) {
     Serial.println("▶️ Deck A fade-in");
     baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
     playRaw1.playRaw(trackFiles[selectedTrackA], 2);
@@ -386,13 +393,13 @@ if (inMenu) {
     deckAPlaying = true;
     beatGridStartA = 0;
     startMillisA = millis();
-    //virtualTimeMs = 0;
+    virtualTimeMs = 0;
     startedA = true;
     delay(200);  // väike debounce
 }
   
      // --- Deck A START ---
-  if (digitalRead(START_BTN_A) == LOW && !fadingInA && !playRaw1.isPlaying()) {
+  if (digitalRead(START_BTN_A) == LOW) {
     baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
     playRaw1.playRaw(trackFiles[selectedTrackA], 2);
 // nulli kõik fadeOut state'id
@@ -407,15 +414,16 @@ if (inMenu) {
     delay(200);  // väike debounce
 }
 // --- Deck A STOP ---
-if (digitalRead(STOP_BTN_A) == LOW && !fadingOutA && playRaw1.isPlaying()) {
+if (digitalRead(STOP_BTN_A) == LOW) {
    fadeStartGainA = gainA;
+   playRaw1.stop();
     fadeStartA = millis();
     fadingOutA = true;
     fadingInA = false;
     
 }
 
-if (digitalRead(START_BTN_B) == LOW && !fadingInB && !playRaw2.isPlaying()) {
+if (digitalRead(START_BTN_B) == LOW ) {
     baseBpmB = extractBpmFromFilename(trackFiles[selectedTrackB]);
     playRaw2.playRaw(trackFiles[selectedTrackB], 2);
     fadeStartGainB = 0.0f;
@@ -424,28 +432,29 @@ if (digitalRead(START_BTN_B) == LOW && !fadingInB && !playRaw2.isPlaying()) {
     Serial.println("▶️ Deck B fade-in");
     beatGridStartB = 0;
     startMillisB = millis();
-    //virtualTimeMs2 = 0;
+    virtualTimeMs2 = 0;
     startedB = true;
     delay(200);  // väike debounce
 }
  // --- Deck B STOP ---
-  if (digitalRead(STOP_BTN_B) == LOW && !fadingOutB && playRaw2.isPlaying()) {
+  if (digitalRead(STOP_BTN_B) == LOW && playRaw2.isPlaying()) {
     fadeStartGainB = gainB;
+    playRaw2.stop();
     fadeStartB = millis();
     fadingOutB = true;
     Serial.println("⏹️ Deck B fade-out");
     delay(200);  // väike debounce
   }
   // --- Faderid uuendused ---
-  if (fadingInA) fadeInMixer(mixerMaster, 0, gainA, fadingInA, fadeStartA, fadeStartGainA, FADE_DURATION, 0.8f);
-  if (fadingOutA && fadeOutMixer(mixerMaster, 0, gainA, fadingOutA, fadeStartA, fadeStartGainA, FADE_DURATION)) {
-    playRaw1.stop();
-  }
+  //if (fadingInA) fadeInMixer(mixerMaster, 0, gainA, fadingInA, fadeStartA, fadeStartGainA, FADE_DURATION, 0.8f);
+  //if (fadingOutA && fadeOutMixer(mixerMaster, 0, gainA, fadingOutA, fadeStartA, fadeStartGainA, FADE_DURATION)) {
+    //playRaw1.stop();
+  //}
 
-  if (fadingInB) fadeInMixer(mixerMaster, 1, gainB, fadingInB, fadeStartB, fadeStartGainB, FADE_DURATION, 0.8f);
-  if (fadingOutB && fadeOutMixer(mixerMaster, 1, gainB, fadingOutB, fadeStartB, fadeStartGainB, FADE_DURATION)) {
-    playRaw2.stop();
-  }
+  //if (fadingInB) fadeInMixer(mixerMaster, 1, gainB, fadingInB, fadeStartB, fadeStartGainB, FADE_DURATION, 0.8f);
+  //if (fadingOutB && fadeOutMixer(mixerMaster, 1, gainB, fadingOutB, fadeStartB, fadeStartGainB, FADE_DURATION)) {
+    //playRaw2.stop();
+  //}
 
 // Check if Deck A finished playing
 if (!playRaw1.isPlaying()) {
@@ -467,12 +476,12 @@ if (!playRaw2.isPlaying()) {
 
 if (digitalRead(SYNCA_BTN) == LOW) {
   syncDeckToOther('A');
-  delay(300); // väldi topeltvajutust
+  delay(200); // väldi topeltvajutust
 }
 
 if (digitalRead(SYNCB_BTN) == LOW) {
   syncDeckToOther('B');
-  delay(300);
+  delay(200);
 }
 
     updateWaveformStream();
@@ -516,18 +525,18 @@ if (!deckB_syncLock) {
 // --- Deck A BPM ---
 float bpm1;
 if (deckA_syncLock) {
-  bpm1 = BASE_BPM * deckA_targetRate;  // tempo lukus SYNC kaudu
+  bpm1 = baseBpmA * deckA_targetRate;  // tempo lukus SYNC kaudu
 } else {
-  bpm1 = BASE_BPM * currentPlaybackRate; // tempo potekast
+  bpm1 = baseBpmA * currentPlaybackRate; // tempo potekast
 }
 unsigned long beatIntervalA = 60000.0 / bpm1;
 
 // --- Deck B BPM ---
 float bpm2;
 if (deckB_syncLock) {
-  bpm2 = BASE_BPM * deckB_targetRate;
+  bpm2 = baseBpmB * deckB_targetRate;
 } else {
-  bpm2 = BASE_BPM * currentPlaybackRate2;
+  bpm2 = baseBpmB * currentPlaybackRate2;
 }
 unsigned long beatIntervalB = 60000.0 / bpm2;
   if (startedA) {
@@ -546,6 +555,7 @@ unsigned long beatIntervalB = 60000.0 / bpm2;
   }
 
   updateCrossfade();
+     drawTrackDurations();
 /*/
  int cutoffA = map(analogRead(A10), 0, 1023, 500, 2000);
 
@@ -560,13 +570,12 @@ biquadB_R.setBandpass(0, cutoffB, 0.707);
     delay(10);
 
 
-  if (drawTimer > 20) {
+  if (drawTimer > 60) {
     drawTimer = 0;
     handleEncoder();
-    drawDeckLabels(bpm1, bpm2);
-    //drawTrackDurations();
-    //tft.setTextSize(1);
-    //  tft.setCursor(50, 10);
+    drawDeckLabels(bpm1, bpm2,baseBpmA,baseBpmB);
+    tft.setTextColor(TFT_myBLUE, ILI9341_BLACK);
+     
   //tft.print(virtualTimeMs);
   //tft.setCursor(50, 130);
    // tft.print(virtualTimeMs2);
@@ -608,7 +617,7 @@ if (digitalRead(SW) == LOW && !inMenu) {
 void listTracksFromSD() {
   digitalWrite(TFT_CS, HIGH);
   digitalWrite(SD_CS, HIGH);
-  delayMicroseconds(50);
+  delayMicroseconds(10);
 
   File root = SD.open("/");
   totalTracks = 0;
@@ -633,7 +642,7 @@ void listTracksFromSD() {
 // --- Menüü joonistamine ---
 void drawMenu() {
   tft.fillScreen(ILI9341_BLACK);
-  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextColor(TFT_myORANGE);
   tft.setTextSize(1);
 
   tft.setCursor(10, 10);
@@ -683,7 +692,7 @@ void prevPage() {
 }
 void drawMenu2() {
   tft.fillScreen(ILI9341_BLACK);
-  tft.setTextColor(ILI9341_WHITE);
+  tft.setTextColor(TFT_myORANGE);
   tft.setTextSize(1);
 
   tft.setCursor(10, 10);
@@ -718,7 +727,7 @@ void handleMenuEncoder() {
       selectingDeckA = !selectingDeckA;
       drawMenu();
     }
-    delay(150);
+    delay(30);
   }
 
   lastCLK = clkState;
@@ -736,21 +745,21 @@ String formatDuration(unsigned long ms) {
 
 // Dynamically show elapsed + duration for each deck
 void drawTrackDurations() {
-  tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK); // foreground and background
-  tft.setTextSize(1);
-
+  tft.setTextColor(TFT_myBLUE2, ILI9341_BLACK); // foreground and background
+   //  tft.setTextSize(2);
+ 
   // Deck A elapsed + duration
   unsigned long elapsedA = millis() - startMillisA;
   if (!startedA) elapsedA = 0;
   String timeA = formatDuration(elapsedA) + "/" + formatDuration(RAW_DURATION_MS);
-  tft.setCursor(240 - timeA.length() * 6 - 5, 5);
+  tft.setCursor(240 - timeA.length() * 6 - 5, 0);
   tft.print(timeA);
 
   // Deck B elapsed + duration
   unsigned long elapsedB = millis() - startMillisB;
   if (!startedB) elapsedB = 0;
   String timeB = formatDuration(elapsedB) + "/" + formatDuration(RAW_DURATION2_MS);
-  tft.setCursor(240 - timeB.length() * 6 - 5, 120);
+  tft.setCursor(240 - timeB.length() * 6 - 5, 180);
   tft.print(timeB);
 }
 
@@ -776,7 +785,6 @@ Serial.println("Deck A streaming started...");
 }
 
 
-delay(50);
 RAW_DURATION_MS = calculateRawDurationMs(trackFiles[selectedTrackA]);
 
 
@@ -785,17 +793,17 @@ char datNameB[100];
 strcpy(datNameB, trackFiles[selectedTrackB]);
 char *dotB = strchr(datNameB, '.');
 if (dotB) strcpy(dotB, ".dat");
-Serial.println(datNameB);
+//Serial.println(datNameB);
 
 
 if (!startWaveformStream('B', datNameB, waveform2, totalPoints2)) {
 Serial.println("Deck B load fail!");
 } else {
-Serial.println("Deck B streaming started...");
+//Serial.println("Deck B streaming started...");
 }
 
 
-delay(50);
+
 RAW_DURATION2_MS = calculateRawDurationMs(trackFiles[selectedTrackB]);
 }
 
@@ -874,7 +882,9 @@ void continueWaveformStream(char deck, unsigned long currentPlayheadMs) {
 bool startWaveformStream(char deck, const char *filename, int16_t *buffer, int &totalPoints) {
 DeckLoadState *deckState = (deck == 'A') ? &deckA : &deckB;
 
-
+    digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
+digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
+delayMicroseconds(5);
 // Close any previous file
 if (deckState->file) deckState->file.close();
 
@@ -899,6 +909,7 @@ deckState->lastReadTime = millis();
 
 Serial.printf("📀 Started streaming load: %s (Deck %c)\n", deckState->filename, deck);
 return true;
+digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
 }
 
 // --- Chunkide lugemine ---
@@ -981,18 +992,17 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
         }
 
 
-  // Puhasta ala
-  tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
+tft.fillRect(SCREEN_WIDTH - 4, yOffset, 4, WAVEFORM_H, ILI9341_BLACK);
 
   // Deck A waveform beat lines
 if (beatInterval > 0) {
-  for (int i = -100; i <= 100; i++) {
+  for (int i = -200; i <= 200; i++) {
     long long beatTime = (long long)firstBeatMs + (long long)i * (long long)beatInterval;
     if (beatTime < 0 || beatTime > (long long)duration) continue;
     float beatIdxF = ((float)beatTime * (float)totalPoints) / (float)duration;
     int x = (int)((beatIdxF - startIdx) * (long)SCREEN_WIDTH / (long)viewWidth);
     if (x >= 0 && x < SCREEN_WIDTH)
-      tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_GREEN);
+      tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_BLACK);
   }
 }
 
@@ -1006,7 +1016,7 @@ if (beatInterval > 0) {
       int height = (int)(peak * (WAVEFORM_H / 2));
       if (height < 0) height = 0;
       if (height > WAVEFORM_H/2) height = WAVEFORM_H/2;
-      tft.drawFastVLine(x, yCenter - height, height * 2, TFT_DARKGREY);
+      tft.drawFastVLine(x, yCenter - height, height * 2, TFT_myLIGHTBLUE);
     }
   }
 
@@ -1015,13 +1025,25 @@ if (beatInterval > 0) {
 }
 
 
-void drawDeckLabels(float bpm1, float bpm2) {
-  tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
-  tft.setTextSize(1);
-  tft.setCursor(10, 10);
-  tft.print("Deck A - BPM: "); tft.print(bpm1, 1);
-  tft.setCursor(10, 130);
-  tft.print("Deck B - BPM: "); tft.print(bpm2, 1);
+void drawDeckLabels(float bpm1, float bpm2, float baseBpmA, float baseBpmB) {
+
+    tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); // foreground and background
+     tft.setTextSize(2);
+     tft.setCursor(0, 0);
+  tft.print("A:"); 
+  tft.setTextColor(TFT_myORANGE, ILI9341_BLACK); // foreground and background
+  tft.print(bpm1, 1);
+   tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); 
+  tft.print("/");tft.print(baseBpmA, 1);
+    tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); // foreground and background
+  tft.setCursor(0, 180);
+  tft.print("B:"); 
+  tft.setTextColor(TFT_myORANGE, ILI9341_BLACK); // foreground and background
+  tft.print(bpm2, 1);
+  tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); 
+  tft.print("/");tft.print(baseBpmB, 1);
+  tft.setTextColor(TFT_myBLUE, ILI9341_BLACK); 
+ 
 }
 
 unsigned long calculateRawDurationMs(const char* filename) {
@@ -1048,50 +1070,6 @@ unsigned long calculateRawDurationMs(const char* filename) {
 }
 
 
-// Function to prompt user to choose Deck A or Deck B
-int deckPrompt(bool deckAPlaying) {
-  int currentDeck = deckAPlaying ? 1 : 0;
-  long lastEnc = myEnc.read();
-
-  tft.fillScreen(ILI9341_BLACK);
-  tft.setCursor(10, 100);
-  tft.setTextSize(2);
-  tft.setTextColor(ILI9341_WHITE);
-  if (deckAPlaying) {
-    tft.print("Deck A is playing");
-    tft.setCursor(10, 120);
-    tft.print("Only Deck B allowed");
-  } else {
-    tft.print("Select Deck (Encoder):");
-  }
-
-  while (true) {
-    long encVal = myEnc.read() / 4;
-    if (encVal != lastEnc) {
-      lastEnc = encVal;
-      if (!deckAPlaying) {
-        currentDeck = (encVal % 2 + 2) % 2;
-      } else {
-        currentDeck = 1;
-      }
-
-      tft.fillRect(10, 140, 220, 30, ILI9341_BLACK);
-      tft.setCursor(10, 140);
-      tft.setTextColor((currentDeck == 0 && !deckAPlaying) ? ILI9341_GREEN : ILI9341_WHITE);
-      tft.print("Deck A");
-
-      tft.setCursor(100, 140);
-      tft.setTextColor(currentDeck == 1 ? ILI9341_GREEN : ILI9341_WHITE);
-      tft.print("Deck B");
-    }
-
-    if (digitalRead(SW) == LOW) {
-      while (digitalRead(SW) == LOW);  // wait for release
-      delay(100); // debounce
-      return currentDeck;
-    }
-  }
-}
 
 float extractBpmFromFilename(const char *filename) {
   int bpm = 128; // vaikeväärtus
