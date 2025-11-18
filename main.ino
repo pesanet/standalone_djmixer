@@ -142,8 +142,8 @@ unsigned long fadeStartA = 0, fadeStartB = 0;
 float fadeStartGainA = 0.0f, fadeStartGainB = 0.0f;
 const unsigned long FADE_DURATION = 500;  // ms
 
-
-
+const char* Deck_A = "DeckA:";
+const char* Deck_B = "DeckB:";
 int zoomLevel = 4;
 int lastCLK = HIGH;
 #define WAVE_WINDOW_SIZE 4000   // Nähtava lainepildi punktid
@@ -289,6 +289,7 @@ void setup() {
   //tft.fillScreen(ILI9341_BLACK); 
 
     digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
+    delayMicroseconds(5);
 digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
 delayMicroseconds(5);
 
@@ -378,41 +379,24 @@ tft.setTextColor(TFT_myBLUE, ILI9341_BLACK);
 
      // --- Deck A START ---
   if (digitalRead(START_BTN_A) == LOW) {
-    Serial.println("▶️ Deck A fade-in");
     baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
     playRaw1.playRaw(trackFiles[selectedTrackA], 2);
-    delay(5); // anna heli pipeline'ile hetk aega startimiseks
-    // nulli kõik fadeOut state'id
-    fadingOutA = false;
-    gainA = 0.0f;
-    mixerMaster.gain(0, gainA);
-
     fadeStartGainA = 0.0f;
     fadeStartA = millis();
     fadingInA = true;
-    deckAPlaying = true;
+    Serial.println("▶️ Deck A fade-in");
     beatGridStartA = 0;
+    if (beatGridStartA == 0) {
+    beatGridStartA = virtualTimeMs;   // kui kasutad audio-time
+    // beatGridStartA = millis();     // kui kasutad realtime millis()
+}
     startMillisA = millis();
     virtualTimeMs = 0;
     startedA = true;
     delay(200);  // väike debounce
 }
-  
-     // --- Deck A START ---
-  if (digitalRead(START_BTN_A) == LOW) {
-    baseBpmA = extractBpmFromFilename(trackFiles[selectedTrackA]);
-    playRaw1.playRaw(trackFiles[selectedTrackA], 2);
-// nulli kõik fadeOut state'id
-    fadingOutA = false;
-    gainA = 0.0f;
-    mixerMaster.gain(0, gainA);
 
-    fadeStartGainA = 0.0f;
-    fadeStartA = millis();
-    fadingInA = true;
-    deckAPlaying = true;
-    delay(200);  // väike debounce
-}
+  
 // --- Deck A STOP ---
 if (digitalRead(STOP_BTN_A) == LOW) {
    fadeStartGainA = gainA;
@@ -431,6 +415,10 @@ if (digitalRead(START_BTN_B) == LOW ) {
     fadingInB = true;
     Serial.println("▶️ Deck B fade-in");
     beatGridStartB = 0;
+    if (beatGridStartB == 0) {
+    beatGridStartB = virtualTimeMs;   // kui kasutad audio-time
+    // beatGridStartA = millis();     // kui kasutad realtime millis()
+}
     startMillisB = millis();
     virtualTimeMs2 = 0;
     startedB = true;
@@ -523,35 +511,38 @@ if (!deckB_syncLock) {
   unsigned long delta = now2 - lastUpdateMs;
   lastUpdateMs = now2;
 // --- Deck A BPM ---
-float bpm1;
+double bpm1;
 if (deckA_syncLock) {
-  bpm1 = baseBpmA * deckA_targetRate;  // tempo lukus SYNC kaudu
+  bpm1 = (double)baseBpmA * (double)deckA_targetRate;  // tempo lukus SYNC kaudu
 } else {
-  bpm1 = baseBpmA * currentPlaybackRate; // tempo potekast
+  bpm1 = (double)baseBpmA * (double)currentPlaybackRate; // tempo potekast
 }
-unsigned long beatIntervalA = 60000.0 / bpm1;
+double beatIntervalA_d = 60000.0 / bpm1;        // ms per beat (double)
+unsigned long beatIntervalA = (unsigned long)llround(beatIntervalA_d);
 
 // --- Deck B BPM ---
-float bpm2;
+double bpm2;
 if (deckB_syncLock) {
-  bpm2 = baseBpmB * deckB_targetRate;
+  bpm2 = (double)baseBpmB * (double)deckB_targetRate;
 } else {
-  bpm2 = baseBpmB * currentPlaybackRate2;
+  bpm2 = (double)baseBpmB * (double)currentPlaybackRate2;
 }
-unsigned long beatIntervalB = 60000.0 / bpm2;
+double beatIntervalB_d = 60000.0 / bpm2;        // ms per beat (double)
+unsigned long beatIntervalB = (unsigned long)llround(beatIntervalB_d);
   if (startedA) {
     virtualTimeMs += delta * currentPlaybackRate;
     //Serial.print("delta A -> "); Serial.println(virtualTimeMs);
     if (virtualTimeMs > RAW_DURATION_MS) virtualTimeMs = RAW_DURATION_MS;
-    drawScrollingWaveform(waveform1, totalPoints1, virtualTimeMs, beatIntervalA, WAVEFORM_Y1, bpm1, RAW_DURATION_MS,beatGridStartA);
+    drawScrollingWaveform(Deck_A, waveform1, totalPoints1, virtualTimeMs, beatIntervalA, WAVEFORM_Y1, bpm1, RAW_DURATION_MS,beatGridStartA);
+    //Serial.print("BeatGridStartA:"); Serial.println(beatGridStartA);
 
   }
 
   if (startedB) {
     virtualTimeMs2 += delta * currentPlaybackRate2;
     if (virtualTimeMs2 > RAW_DURATION2_MS) virtualTimeMs2 = RAW_DURATION2_MS;
-    drawScrollingWaveform(waveform2, totalPoints2, virtualTimeMs2, beatIntervalB, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS,beatGridStartB);
-
+    drawScrollingWaveform(Deck_B, waveform2, totalPoints2, virtualTimeMs2, beatIntervalB, WAVEFORM_Y2, bpm2, RAW_DURATION2_MS,beatGridStartB);
+    //Serial.print("BeatGridStartB:"); Serial.println(beatGridStartB);
   }
 
   updateCrossfade();
@@ -956,7 +947,7 @@ void handleEncoder() {
 
 
 // Kui waveform on int16_t (sisalduvad -32767..+32767), teisendame enne joonistamist float-ks
-void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now, unsigned long beatInterval, int yOffset, float bpm, unsigned long duration, unsigned long beatGridStart) {
+void drawScrollingWaveform(const char* tag, const int16_t *waveform, int totalPoints, double virtualTimeMs, unsigned long beatInterval, int yOffset, float bpm, unsigned long duration, unsigned long beatGridStart) {
   // Sama turvakontroll nagu float-versioonis
   if (duration == 0 || totalPoints <= 0) {
     tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
@@ -966,7 +957,7 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
   int viewWidth = FIXED_VIEW_WIDTH / zoomLevel;
   if (viewWidth < 1) viewWidth = 1;
 
-  float posFrac = (float)now / (float)duration;
+  float posFrac = (float)virtualTimeMs / (float)duration;
   if (posFrac < 0) posFrac = 0;
   if (posFrac > 1) posFrac = 1;
   int idealPlayheadIdx = (int)(posFrac * (float)totalPoints);
@@ -985,16 +976,29 @@ void drawScrollingWaveform(const int16_t *waveform, int totalPoints, double now,
   unsigned long playheadMs = (unsigned long)((float)playheadIdx / (float)totalPoints * (float)duration);
 
     // Joonista beatid alates fikseeritud beatGridStart väärtusest
-    unsigned long firstBeatMs = 0;
-        if (beatInterval > 0) {
-          long long rel = (long long)playheadMs - (long long)beatGridStartA; // või B vastavalt deckile
-          firstBeatMs = beatGridStartA + (rel - (rel % beatInterval));
-        }
+   unsigned long firstBeatMs = 0;
 
+if (beatInterval > 0) {
+    // faas võrreldes ühise alguspunktiga
+    long long rel = (long long)(millis() - beatGridStart);
 
+    // rel võib olla negatiivne → korrigeerime
+    long long phase = rel % (long long)beatInterval;
+    if (phase < 0) phase += beatInterval;
+
+    // esimene beat vasakul pool (ekraanil)
+    firstBeatMs = virtualTimeMs - phase;
+}
+
+static unsigned long lastLog = 0;
+if (millis() - lastLog > 500) {
+  lastLog = millis();
+  //logBeatDebug(tag, virtualTimeMs, playheadMs, bpm, beatInterval, beatGridStart, firstBeatMs);
+}
 tft.fillRect(SCREEN_WIDTH - 4, yOffset, 4, WAVEFORM_H, ILI9341_BLACK);
-
-  // Deck A waveform beat lines
+ // Puhasta ala
+  //tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
+  // Deck  waveform beat lines
 if (beatInterval > 0) {
   for (int i = -200; i <= 200; i++) {
     long long beatTime = (long long)firstBeatMs + (long long)i * (long long)beatInterval;
@@ -1084,31 +1088,37 @@ float extractBpmFromFilename(const char *filename) {
   return bpm;
 }
 void syncDeckToOther(char targetDeck) {
+
   if (targetDeck == 'A') {
     float ratio = baseBpmB / baseBpmA;
     currentPlaybackRate = ratio * currentPlaybackRate2;
     playRaw1.setPlaybackRate(currentPlaybackRate);
-
-    virtualTimeMs = virtualTimeMs2;
+    //virtualTimeMs = virtualTimeMs2;
     Serial.println("🎵 Deck A synced to Deck B");
 
     // Lukk peale
     deckA_syncLock = true;
     deckA_targetRate = currentPlaybackRate;
+
+    // 👉 Beat grid alguspunkt samaks
+    beatGridStartA = beatGridStartB;
   } 
   else if (targetDeck == 'B') {
     float ratio = baseBpmA / baseBpmB;
     currentPlaybackRate2 = ratio * currentPlaybackRate;
     playRaw2.setPlaybackRate(currentPlaybackRate2);
-
-    virtualTimeMs2 = virtualTimeMs;
+    //virtualTimeMs2 = virtualTimeMs;
     Serial.println("🎵 Deck B synced to Deck A");
 
     // Lukk peale
     deckB_syncLock = true;
     deckB_targetRate = currentPlaybackRate2;
+
+    // 👉 Beat grid alguspunkt samaks
+    beatGridStartA = beatGridStartB;
   }
 }
+
 void updateCrossfade() {
   int raw = analogRead(A11);
   raw = constrain(raw, 0, 1023);
@@ -1135,4 +1145,21 @@ void updateCrossfade() {
   //Serial.print(smoothedCrossfade, 2);
   //Serial.print("  gainA: ");
   //Serial.println(gainA, 2);
+}
+
+
+void logBeatDebug(const char* tag,
+                  unsigned long now,
+                  unsigned long playheadMs,
+                  double bpm_d,
+                  unsigned long beatInterval,
+                  unsigned long beatGridStart,
+                  unsigned long firstBeatMs) {
+
+  Serial.print(tag); Serial.print(" now:"); Serial.print(now);
+  Serial.print(" playheadMs:"); Serial.print(playheadMs);
+  Serial.print(" bpm:"); Serial.print(bpm_d, 3);
+  Serial.print(" beatInterval:"); Serial.print(beatInterval);
+  Serial.print(" beatGridStart:"); Serial.print(beatGridStart);
+  Serial.print(" firstBeatMs:"); Serial.println(firstBeatMs);
 }
