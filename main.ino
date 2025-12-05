@@ -66,7 +66,7 @@ ILI9341_t3n tft = ILI9341_t3n(TFT_CS, TFT_DC, TFT_RST, TFT_MOSI, TFT_CLK, TFT_MI
 
 // === SD / File Setup ===
 const int SD_CS = 10;
-char trackFiles[10][200];
+char trackFiles[50][128]; // 10 faili, iga nimi max 100 tähemärki
 int totalTracks = 0;
 int selectedTrackA = 0;
 int selectedTrackB = 1;
@@ -84,6 +84,9 @@ int targetDeck = 1; // default Deck B
 const int FIXED_VIEW_WIDTH = 4000;
 
 // === Encoder & Mixer Control ===
+unsigned long lastEncoderTime = 0;
+const unsigned long encoderDebounce = 1;  // 3–5 ms on ideaalne
+
 Encoder myEnc(28, 29);
 #define CLK 29
 #define DT  28
@@ -290,13 +293,13 @@ void setup() {
 
     digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
     delayMicroseconds(5);
-digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
-delayMicroseconds(5);
+//digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
+//delayMicroseconds(5);
 
 if (!SD.begin(10)) {
   Serial.println("SD-kaardi initsialiseerimine ebaõnnestus!");
 } else {
-  //Serial.println("SD-kaart leitud.");
+  Serial.println("SD-kaart leitud.");
 }
 
 digitalWrite(TFT_CS, LOW);    // anna SPI tagasi ekraanile
@@ -607,8 +610,8 @@ if (digitalRead(SW) == LOW && !inMenu) {
 // --- Failide lugemine SD-kaardilt ---
 void listTracksFromSD() {
   digitalWrite(TFT_CS, HIGH);
-  digitalWrite(SD_CS, HIGH);
-  delayMicroseconds(10);
+  //digitalWrite(SD_CS, HIGH);
+  delayMicroseconds(5);
 
   File root = SD.open("/");
   totalTracks = 0;
@@ -618,17 +621,19 @@ void listTracksFromSD() {
     if (!entry.isDirectory()) {
       String name = entry.name();
       if (name.endsWith(".raw")) {
-        name.toCharArray(trackFiles[totalTracks], 100);
+        name.toCharArray(trackFiles[totalTracks], 128);
         totalTracks++;
-      }
+         if (totalTracks >= 20) break; // turvalisuse mõttes loeb ainult 20 tracki
+      }Serial.println(name);
     }
     entry.close();
   }
-  digitalWrite(TFT_CS, LOW);
+  
 
   // Arvuta mitu lehte vaja
   menuTotalPages = (totalTracks + MENU_TRACKS_PER_PAGE - 1) / MENU_TRACKS_PER_PAGE;
   menuCurrentPage = 0;
+  digitalWrite(TFT_CS, LOW);
 }
 // --- Menüü joonistamine ---
 void drawMenu() {
@@ -690,17 +695,26 @@ void drawMenu2() {
   tft.print("TEST ");
 }
 void handleMenuEncoder() {
+
+  // --- Debounce & rate limit ---
+  unsigned long now = millis();
+  if (now - lastEncoderTime < encoderDebounce) return;
+  lastEncoderTime = now;
+
   int clkState = digitalRead(CLK);
+
   if (clkState != lastCLK) {
+    lastCLK = clkState;   // deadband
+
     if (digitalRead(DT) != clkState) {
+      // --- Clockwise ---
       if (selectingDeckA && !startedA) {
-        selectedTrackA++;
-        if (selectedTrackA >= totalTracks) selectedTrackA = 0;
+        selectedTrackA = (selectedTrackA + 1) % totalTracks;
       } else if (!selectingDeckA && !startedB) {
-        selectedTrackB++;
-        if (selectedTrackB >= totalTracks) selectedTrackB = 0;
+        selectedTrackB = (selectedTrackB + 1) % totalTracks;
       }
     } else {
+      // --- Counterclockwise ---
       if (selectingDeckA && !startedA) {
         selectedTrackA--;
         if (selectedTrackA < 0) selectedTrackA = totalTracks - 1;
@@ -709,10 +723,11 @@ void handleMenuEncoder() {
         if (selectedTrackB < 0) selectedTrackB = totalTracks - 1;
       }
     }
+
     drawMenu();
-    //delay(80);
   }
 
+  // OK button handling unchanged
   if (digitalRead(OK_BTN) == LOW) {
     if ((selectingDeckA && !startedB) || (!selectingDeckA && !startedA)) {
       selectingDeckA = !selectingDeckA;
@@ -720,9 +735,8 @@ void handleMenuEncoder() {
     }
     delay(30);
   }
-
-  lastCLK = clkState;
 }
+
 
 // Helper function to format time as MM:SS
 String formatDuration(unsigned long ms) {
@@ -995,7 +1009,7 @@ if (millis() - lastLog > 500) {
   lastLog = millis();
   //logBeatDebug(tag, virtualTimeMs, playheadMs, bpm, beatInterval, beatGridStart, firstBeatMs);
 }
-tft.fillRect(SCREEN_WIDTH - 4, yOffset, 4, WAVEFORM_H, ILI9341_BLACK);
+
  // Puhasta ala
   //tft.fillRect(0, yOffset, SCREEN_WIDTH, WAVEFORM_H, ILI9341_BLACK);
   // Deck  waveform beat lines
@@ -1006,23 +1020,24 @@ if (beatInterval > 0) {
     float beatIdxF = ((float)beatTime * (float)totalPoints) / (float)duration;
     int x = (int)((beatIdxF - startIdx) * (long)SCREEN_WIDTH / (long)viewWidth);
     if (x >= 0 && x < SCREEN_WIDTH)
-      tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_BLACK);
+      tft.drawFastVLine(x, yOffset, WAVEFORM_H, TFT_myBLUE);
   }
 }
-
-  // Joonista waveform (konverteerime int16 -> float)
-  for (int x = 0; x < SCREEN_WIDTH; x++) {
+tft.drawFastHLine(0, yOffset + WAVEFORM_H/2, SCREEN_WIDTH, ILI9341_DARKGREY);
+  // Joonista waveform (konverteerime int16 -> float) 
+  for (int x = 0; x < SCREEN_WIDTH; x++) { 
     int idx = startIdx + (x * viewWidth / SCREEN_WIDTH);
-    if (idx >= 0 && idx < totalPoints) {
-      // konvert: -32767..32767 -> -1.0..+1.0
-      float peak = (float)waveform[idx] / 32767.0f;
-      int yCenter = yOffset + WAVEFORM_H / 2;
-      int height = (int)(peak * (WAVEFORM_H / 2));
-      if (height < 0) height = 0;
-      if (height > WAVEFORM_H/2) height = WAVEFORM_H/2;
-      tft.drawFastVLine(x, yCenter - height, height * 2, TFT_myLIGHTBLUE);
-    }
-  }
+     int yCenter = yOffset + WAVEFORM_H / 2;
+      tft.drawFastVLine(x, yOffset, WAVEFORM_H, ILI9341_BLACK);
+       if (idx >= 0 && idx < totalPoints) { 
+        // konvert: -32767..32767 -> -1.0..+1.0 
+        float peak = (float)waveform[idx] / 32767.0f;
+         int yCenter = yOffset + WAVEFORM_H / 2;
+          int height = (int)(peak * (WAVEFORM_H / 2));
+           if (height < 0) height = 0; if (height > WAVEFORM_H/2) height = WAVEFORM_H/2;
+            tft.drawFastVLine(x, yCenter - height, height * 2, TFT_myLIGHTBLUE);
+             } 
+             }
 
   // Playhead viimasena
   tft.drawFastVLine(PLAYHEAD_X, yOffset, WAVEFORM_H, ILI9341_RED);
