@@ -47,6 +47,9 @@ AudioConnection          patchCord16(mixerMaster, 0, audioOutput, 1);
 int menuCurrentPage = 0;
 int menuTotalPages = 0;
 #define MENU_TRACKS_PER_PAGE 15
+int selected = 0;
+int prevSelected = -1;
+int menuScrollOffset = 0;
 // === Display Setup ===
 #define TFT_MISO 12
 #define TFT_MOSI 11
@@ -293,8 +296,8 @@ void setup() {
 
     digitalWrite(TFT_CS, HIGH);   // vabasta ekraan
     delayMicroseconds(5);
-//digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
-//delayMicroseconds(5);
+digitalWrite(SD_CS, HIGH);    // vabasta kaardi CS, et ta ei segaks
+delayMicroseconds(5);
 
 if (!SD.begin(10)) {
   Serial.println("SD-kaardi initsialiseerimine ebaõnnestus!");
@@ -373,7 +376,7 @@ if (inMenu) {
       loadSelectedTrack(false);
     }
   }
-
+  
   
   return;
 }
@@ -610,7 +613,7 @@ if (digitalRead(SW) == LOW && !inMenu) {
 // --- Failide lugemine SD-kaardilt ---
 void listTracksFromSD() {
   digitalWrite(TFT_CS, HIGH);
-  //digitalWrite(SD_CS, HIGH);
+  digitalWrite(SD_CS, HIGH);
   delayMicroseconds(5);
 
   File root = SD.open("/");
@@ -644,7 +647,7 @@ void drawMenu() {
   tft.setCursor(10, 10);
   tft.print("Vali lugu: ");
   tft.println(selectingDeckA ? "Deck A" : "Deck B");
-
+  
   int startIndex = menuCurrentPage * MENU_TRACKS_PER_PAGE;
   int endIndex = min(startIndex + MENU_TRACKS_PER_PAGE, totalTracks);
 
@@ -666,11 +669,18 @@ void drawMenu() {
   tft.print("/");
   tft.println(menuTotalPages);
 
+  tft.print(" Track ");
+  tft.print(selectedTrackA+1);
+  
+
   // --- Kuvame nupukäsud ---
   tft.setTextColor(ILI9341_DARKGREY);
   tft.setCursor(180, 25 + (MENU_TRACKS_PER_PAGE + 1) * 12);
   tft.print("<- / -> lehe vahetus");
 }
+
+
+
 
 // --- Lehe muutmine (näiteks encoderi või nuppudega) ---
 void nextPage() {
@@ -686,6 +696,7 @@ void prevPage() {
     drawMenu();
   }
 }
+
 void drawMenu2() {
   tft.fillScreen(ILI9341_BLACK);
   tft.setTextColor(TFT_myORANGE);
@@ -704,38 +715,44 @@ void handleMenuEncoder() {
   int clkState = digitalRead(CLK);
 
   if (clkState != lastCLK) {
-    lastCLK = clkState;   // deadband
+    lastCLK = clkState;
 
-    if (digitalRead(DT) != clkState) {
-      // --- Clockwise ---
-      if (selectingDeckA && !startedA) {
-        selectedTrackA = (selectedTrackA + 1) % totalTracks;
-      } else if (!selectingDeckA && !startedB) {
-        selectedTrackB = (selectedTrackB + 1) % totalTracks;
-      }
+    // --- MILLIST DECKI MUUDAME? ---
+    int *selPtr = nullptr;
+
+    if (selectingDeckA && !startedA) {
+      selPtr = &selectedTrackA;
+    } else if (!selectingDeckA && !startedB) {
+      selPtr = &selectedTrackB;
     } else {
-      // --- Counterclockwise ---
-      if (selectingDeckA && !startedA) {
-        selectedTrackA--;
-        if (selectedTrackA < 0) selectedTrackA = totalTracks - 1;
-      } else if (!selectingDeckA && !startedB) {
-        selectedTrackB--;
-        if (selectedTrackB < 0) selectedTrackB = totalTracks - 1;
-      }
+      return;   // mõlemad mängivad → ei muuda midagi
     }
 
+    // --- Encodri suund ---
+    if (digitalRead(DT) != clkState) {
+      (*selPtr)++;
+      if (*selPtr >= totalTracks) *selPtr = 0;
+    } else {
+      (*selPtr)--;
+      if (*selPtr < 0) *selPtr = totalTracks - 1;
+    }
+
+    // --- PAGE LOOGIKA ---
+    int trackIndex = *selPtr;
+
+    int newPage = trackIndex / MENU_TRACKS_PER_PAGE;
+
+    if (newPage != menuCurrentPage) {
+      menuCurrentPage = newPage;   // vaheta lehte
+      drawMenu();                  // joonista kogu leht
+      return;
+    }
+
+    // --- SAMA LEHT → ainult valiku uuendus ---
     drawMenu();
   }
-
-  // OK button handling unchanged
-  if (digitalRead(OK_BTN) == LOW) {
-    if ((selectingDeckA && !startedB) || (!selectingDeckA && !startedA)) {
-      selectingDeckA = !selectingDeckA;
-      drawMenu();
-    }
-    delay(30);
-  }
 }
+
 
 
 // Helper function to format time as MM:SS
